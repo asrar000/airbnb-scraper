@@ -3,9 +3,10 @@ package airbnb
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,9 +18,11 @@ import (
 )
 
 const (
-	airbnbBase    = "https://www.airbnb.com"
-	startURL      = "https://www.airbnb.com/"
-	platform      = "airbnb"
+	// bangkokURL is the fixed starting search URL — Bangkok listings available next month.
+	bangkokURL = "https://www.airbnb.com/s/Bangkok/homes?place_id=ChIJ82ENKDJgHTERIEjiXbIAAQE&refinement_paths%5B%5D=%2Fhomes&date_picker_type=FLEXIBLE_DATES&flexible_trip_lengths%5B%5D=WEEKEND_TRIP&flexible_trip_dates%5B%5D=march&search_type=HOMEPAGE_CAROUSEL_CLICK"
+	platform   = "airbnb"
+	// Airbnb paginates by incrementing items_offset by 18 per page
+	pageSize = 18
 )
 
 // Scraper orchestrates the Airbnb scraping process.
@@ -74,154 +77,71 @@ func (s *Scraper) Scrape() ([]*models.RawListing, error) {
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer cancelAlloc()
 
-	// Suppress chromedp internal log noise (harmless version-mismatch warnings).
-	// chromedp.NewContext accepts a chromedp.WithLogf option — we create a child
-	// context with a no-op logger so "could not unmarshal event" spam is silenced.
+	// Suppress "could not unmarshal event" / "unknown PrivateNetworkRequestPolicy" noise.
 	silentCtx, cancelSilent := chromedp.NewContext(allocCtx, chromedp.WithLogf(func(string, ...interface{}) {}))
 	defer cancelSilent()
 	allocCtx = silentCtx
 
-	// Navigate to the home page and find the "Available next month" section URL
-	firstPageURL, err := s.findAvailableNextMonthURL(allocCtx)
-	if err != nil {
-		return nil, fmt.Errorf("could not locate 'Available next month' section: %w", err)
-	}
-
-	s.logger.Info("[airbnb] Found section URL: %s", firstPageURL)
-
-	// Scrape page by page
-	currentURL := firstPageURL
+	// Scrape page by page — pagination is handled by bumping items_offset in the URL.
 	for page := 1; page <= s.cfg.PagesToScrape; page++ {
-		s.logger.Info("[airbnb] Scraping page %d — URL: %s", page, currentURL)
+		pageURL := buildPageURL(bangkokURL, page)
+		s.logger.Info("[airbnb] Scraping page %d — URL: %s", page, pageURL)
 
-		pageListings, nextURL, err := s.scrapePage(allocCtx, currentURL, page)
+		pageListings, err := s.scrapePage(allocCtx, pageURL, page)
 		if err != nil {
 			s.logger.Error("[airbnb] Page %d failed: %v", page, err)
 			break
 		}
 
-		// Enrich the first cfg.ListingsPerPage listings with detail-page data
+		if len(pageListings) == 0 {
+			s.logger.Warn("[airbnb] Page %d returned 0 listings — stopping pagination", page)
+			break
+		}
+
+		// Visit each listing's detail page concurrently to get the description.
 		s.enrichListings(allocCtx, pageListings)
 
 		s.mu.Lock()
 		s.listings = append(s.listings, pageListings...)
 		s.mu.Unlock()
 
-		s.logger.Info("[airbnb] Page %d done — collected %d listings so far",
-			page, len(s.listings))
-
-		if nextURL == "" || page == s.cfg.PagesToScrape {
-			break
-		}
-		currentURL = nextURL
+		s.logger.Info("[airbnb] Page %d done — collected %d listings so far", page, len(s.listings))
 
 		// Polite delay between pages
-		time.Sleep(time.Duration(s.cfg.RateLimitMs) * time.Millisecond)
+		if page < s.cfg.PagesToScrape {
+			time.Sleep(time.Duration(s.cfg.RateLimitMs) * time.Millisecond)
+		}
 	}
 
 	s.logger.Info("[airbnb] Scrape complete — total raw listings: %d", len(s.listings))
 	return s.listings, nil
 }
 
-// findAvailableNextMonthURL opens the Airbnb home page, locates the
-// "Available next month in …" section, and returns its link.
-func (s *Scraper) findAvailableNextMonthURL(allocCtx context.Context) (string, error) {
-	var sectionURL string
+// buildPageURL constructs the URL for a given page number by setting items_offset.
+// Airbnb uses items_offset = (page-1) * pageSize to paginate search results.
+func buildPageURL(base string, page int) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return base
+	}
 
-	err := s.retry.Do("find-available-next-month", func() error {
-		ctx, cancel := chromedp.NewContext(allocCtx)
-		defer cancel()
+	q := u.Query()
+	// Remove any existing cursor/offset params to avoid conflicts
+	q.Del("cursor")
+	q.Del("items_offset")
+	q.Del("section_offset")
 
-		ctx, cancelTimeout := context.WithTimeout(ctx, 60*time.Second)
-		defer cancelTimeout()
+	offset := (page - 1) * pageSize
+	q.Set("items_offset", strconv.Itoa(offset))
+	q.Set("section_offset", "0")
 
-		var links []string
-
-		err := chromedp.Run(ctx,
-			chromedp.Navigate(startURL),
-			chromedp.Sleep(5*time.Second),
-
-			// Extract all anchor hrefs that look like search results
-			chromedp.Evaluate(`
-				(function() {
-					var results = [];
-					// Look for section heading containing "Available next month"
-					var headings = document.querySelectorAll('h2, h3, section h1, [data-section-id]');
-					for (var i = 0; i < headings.length; i++) {
-						if (headings[i].textContent && headings[i].textContent.toLowerCase().includes('available next month')) {
-							// Find nearby links in the parent section
-							var section = headings[i].closest('section') || headings[i].parentElement;
-							if (section) {
-								var anchors = section.querySelectorAll('a[href*="/s/"]');
-								for (var j = 0; j < anchors.length; j++) {
-									results.push(anchors[j].href);
-								}
-								// Also look for "Show all" or section link
-								var sectionLink = section.querySelector('a[href*="search"]');
-								if (sectionLink) results.unshift(sectionLink.href);
-							}
-						}
-					}
-					// Fallback: find any "See all" button near "available next month"
-					var allLinks = document.querySelectorAll('a');
-					for (var k = 0; k < allLinks.length; k++) {
-						var txt = allLinks[k].textContent.toLowerCase();
-						var href = allLinks[k].href || '';
-						if ((txt.includes('show all') || txt.includes('see all')) && href.includes('/s/')) {
-							results.push(href);
-						}
-					}
-					return results;
-				})()
-			`, &links),
-		)
-		if err != nil {
-			return fmt.Errorf("chromedp navigate/evaluate: %w", err)
-		}
-
-		// Deduplicate and pick the first valid search URL
-		seen := make(map[string]bool)
-		for _, l := range links {
-			if !seen[l] && strings.Contains(l, "/s/") {
-				seen[l] = true
-				sectionURL = l
-				return nil
-			}
-		}
-
-		// Fallback: try to get any listing URL and derive a search URL
-		if sectionURL == "" {
-			var fallback string
-			_ = chromedp.Run(ctx,
-				chromedp.Evaluate(`
-					(function(){
-						var a = document.querySelector('a[href*="/s/"]');
-						return a ? a.href : '';
-					})()
-				`, &fallback),
-			)
-			if fallback != "" {
-				sectionURL = fallback
-				return nil
-			}
-
-			// Last resort fallback - use a Bangkok search
-			sectionURL = "https://www.airbnb.com/s/Bangkok/homes"
-			s.logger.Warn("[airbnb] Could not locate section link on homepage, using fallback: %s", sectionURL)
-			return nil
-		}
-
-		return nil
-	})
-
-	return sectionURL, err
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // scrapePage loads a search-results page and extracts up to ListingsPerPage cards.
-// It returns the raw listings and the URL of the next page (if any).
-func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum int) ([]*models.RawListing, string, error) {
+func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum int) ([]*models.RawListing, error) {
 	var rawListings []*models.RawListing
-	var nextURL string
 
 	err := s.retry.Do(fmt.Sprintf("scrape-page-%d", pageNum), func() error {
 		ctx, cancel := chromedp.NewContext(allocCtx)
@@ -239,32 +159,30 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 		}
 
 		var cards []cardData
-		var nextPageURL string
 
 		err := chromedp.Run(ctx,
 			chromedp.Navigate(pageURL),
 			chromedp.Sleep(6*time.Second),
 
-			// Scroll down to trigger lazy loading
+			// Scroll to trigger lazy-loaded cards
 			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight / 2)`, nil),
 			chromedp.Sleep(2*time.Second),
 			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil),
 			chromedp.Sleep(2*time.Second),
 
-			// Extract listing cards
+			// Extract listing cards — tries multiple selector strategies
 			chromedp.Evaluate(`
 				(function() {
 					var results = [];
 					var limit = `+fmt.Sprintf("%d", s.cfg.ListingsPerPage)+`;
 
-					// Try multiple Airbnb card selectors (their DOM changes frequently)
+					// Strategy 1: data-testid wrappers (most reliable when present)
 					var cardSelectors = [
 						'[data-testid="listing-card-wrapper"]',
 						'[itemprop="itemListElement"]',
 						'div[data-check-in]',
 						'div[class*="listingCard"]',
-						'div[class*="StayCard"]',
-						'div[class*="roomCard"]'
+						'div[class*="StayCard"]'
 					];
 
 					var cards = [];
@@ -273,23 +191,24 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 						if (cards.length > 0) break;
 					}
 
-					// Final fallback: any anchor with /rooms/ in href
+					// Strategy 2: fallback — collect from room anchor tags directly
 					if (cards.length === 0) {
+						var seen = {};
 						var anchors = document.querySelectorAll('a[href*="/rooms/"]');
 						for (var ai = 0; ai < anchors.length && results.length < limit; ai++) {
 							var a = anchors[ai];
 							var href = a.href || '';
-							if (!href) continue;
+							if (!href || seen[href]) continue;
+							seen[href] = true;
 
-							// Walk up to find price/title siblings
 							var container = a.closest('div') || a.parentElement;
 							var text = container ? container.innerText : a.innerText;
 							var lines = text.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
 
 							results.push({
-								title:    lines[0] || a.title || a.innerText || 'N/A',
+								title:    lines[0] || a.title || 'N/A',
 								price:    lines.find(function(l){ return l.includes('$') || l.includes('฿'); }) || 'N/A',
-								location: lines[1] || 'N/A',
+								location: lines[1] || 'Bangkok',
 								rating:   lines.find(function(l){ return /^\d\.\d+/.test(l); }) || '',
 								url:      href
 							});
@@ -297,83 +216,64 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 						return results;
 					}
 
-					// Parse structured cards
-					for (var i = 0; i < Math.min(cards.length, limit); i++) {
+					// Strategy 1: parse structured cards
+					var seen = {};
+					for (var i = 0; i < cards.length && results.length < limit; i++) {
 						var card = cards[i];
 
-						// Title
-						var titleEl = card.querySelector('[data-testid="listing-card-title"], [class*="title"], [class*="Title"], [class*="name"], [class*="Name"], h2, h3');
-						var title = titleEl ? titleEl.innerText.trim() : '';
+						var titleEl = card.querySelector(
+							'[data-testid="listing-card-title"], [class*="title"], [class*="Title"], h2, h3'
+						);
+						var title = titleEl ? titleEl.innerText.trim() : 'N/A';
 
-						// Price
-						var priceEl = card.querySelector('[class*="price"], [class*="Price"], [data-testid*="price"], span[aria-label*="per night"]');
+						var priceEl = card.querySelector(
+							'[class*="price"], [class*="Price"], [data-testid*="price"], span[aria-label*="per night"]'
+						);
 						var price = priceEl ? priceEl.innerText.trim() : '';
 						if (!price) {
 							var allSpans = card.querySelectorAll('span');
-							for (var s = 0; s < allSpans.length; s++) {
-								if (allSpans[s].innerText.includes('$') || allSpans[s].innerText.includes('฿')) {
-									price = allSpans[s].innerText.trim();
-									break;
-								}
+							for (var sp = 0; sp < allSpans.length; sp++) {
+								var t = allSpans[sp].innerText;
+								if (t.includes('$') || t.includes('฿')) { price = t.trim(); break; }
 							}
 						}
 
-						// Location / subtitle
-						var locEl = card.querySelector('[class*="subtitle"], [class*="location"], [class*="Location"], [class*="description"], span[class*="stay"]');
-						var location = locEl ? locEl.innerText.trim() : '';
+						var locEl = card.querySelector(
+							'[class*="subtitle"], [class*="location"], [class*="Location"], [class*="description"]'
+						);
+						var location = locEl ? locEl.innerText.trim() : 'Bangkok';
 
-						// Rating
-						var ratingEl = card.querySelector('[aria-label*="rating"], [class*="rating"], [class*="Rating"], span[class*="review"]');
+						var ratingEl = card.querySelector(
+							'[aria-label*="rating"], [class*="rating"], [class*="Rating"]'
+						);
 						var rating = ratingEl ? ratingEl.innerText.trim() : '';
 						if (!rating) {
-							var spans = card.querySelectorAll('span');
-							for (var rs = 0; rs < spans.length; rs++) {
-								if (/^4\.\d|^5\.0/.test(spans[rs].innerText.trim())) {
-									rating = spans[rs].innerText.trim();
-									break;
+							var rspans = card.querySelectorAll('span');
+							for (var rs = 0; rs < rspans.length; rs++) {
+								if (/^[4-5]\.\d+/.test(rspans[rs].innerText.trim())) {
+									rating = rspans[rs].innerText.trim(); break;
 								}
 							}
 						}
 
-						// URL
 						var linkEl = card.querySelector('a[href*="/rooms/"]') || card.querySelector('a');
 						var url = linkEl ? linkEl.href : '';
 
-						if (url || title) {
-							results.push({ title: title || 'N/A', price: price || 'N/A', location: location || 'N/A', rating: rating, url: url });
-						}
+						if (!url || seen[url]) continue;
+						seen[url] = true;
+
+						results.push({
+							title:    title || 'N/A',
+							price:    price || 'N/A',
+							location: location || 'Bangkok',
+							rating:   rating,
+							url:      url
+						});
 					}
 
 					return results;
 				})()
 			`, &cards),
-
-			// Find next-page button
-			chromedp.Evaluate(`
-				(function() {
-					var nextSelectors = [
-						'a[aria-label="Next"]',
-						'[data-testid="pagination-next"]',
-						'a[href*="items_offset"]',
-						'button[aria-label*="next" i]'
-					];
-					for (var i = 0; i < nextSelectors.length; i++) {
-						var el = document.querySelector(nextSelectors[i]);
-						if (el) {
-							return el.href || el.getAttribute('data-href') || '';
-						}
-					}
-					// Look for next page link in pagination
-					var paginationLinks = document.querySelectorAll('a[href*="cursor"], a[href*="offset"]');
-					for (var j = 0; j < paginationLinks.length; j++) {
-						var text = paginationLinks[j].innerText.toLowerCase();
-						if (text.includes('next') || text === '>') {
-							return paginationLinks[j].href;
-						}
-					}
-					return '';
-				})()
-			`, &nextPageURL),
 		)
 
 		if err != nil {
@@ -386,13 +286,10 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 			if c.URL == "" {
 				continue
 			}
-
-			// Skip duplicates
 			if !s.visitedURL.Add(c.URL) {
 				s.logger.Debug("[airbnb] Skipping duplicate URL: %s", c.URL)
 				continue
 			}
-
 			rawListings = append(rawListings, &models.RawListing{
 				Title:     c.Title,
 				RawPrice:  c.Price,
@@ -404,22 +301,19 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 			})
 		}
 
-		nextURL = nextPageURL
 		return nil
 	})
 
-	return rawListings, nextURL, err
+	return rawListings, err
 }
 
-// enrichListings visits each listing's detail page to fill in the Description field.
-// It uses the WorkerPool for concurrent detail-page fetching.
+// enrichListings visits each listing's detail page concurrently to get the description.
 func (s *Scraper) enrichListings(allocCtx context.Context, listings []*models.RawListing) {
 	for _, listing := range listings {
-		l := listing // capture loop variable
+		l := listing
 		if l.URL == "" {
 			continue
 		}
-
 		s.pool.Submit(func() {
 			desc, err := s.scrapeDetailPage(allocCtx, l.URL)
 			if err != nil {
@@ -433,7 +327,7 @@ func (s *Scraper) enrichListings(allocCtx context.Context, listings []*models.Ra
 	s.pool.Wait()
 }
 
-// scrapeDetailPage visits a single listing page and extracts its description / metadata.
+// scrapeDetailPage visits a single listing page and extracts its description.
 func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (string, error) {
 	var description string
 
@@ -447,10 +341,8 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (string
 		return chromedp.Run(ctx,
 			chromedp.Navigate(url),
 			chromedp.Sleep(4*time.Second),
-
 			chromedp.Evaluate(`
 				(function() {
-					// Try known description selectors
 					var selectors = [
 						'[data-testid="listing-description-text"]',
 						'[class*="description"]',
@@ -459,15 +351,12 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (string
 						'div[data-section-id="DESCRIPTION_MODAL_DEFAULT"] span',
 						'[data-plugin-in-point-id="DESCRIPTION_DEFAULT"] span'
 					];
-
 					for (var i = 0; i < selectors.length; i++) {
 						var el = document.querySelector(selectors[i]);
 						if (el && el.innerText.trim().length > 30) {
 							return el.innerText.trim().substring(0, 500);
 						}
 					}
-
-					// Fallback: collect all <p> text from main content
 					var paragraphs = document.querySelectorAll('main p, article p');
 					var texts = [];
 					for (var j = 0; j < paragraphs.length && texts.join(' ').length < 400; j++) {
@@ -483,21 +372,16 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (string
 	return description, err
 }
 
-// findChromeBinary searches common locations for a Google Chrome or Chromium
-// binary and returns its path. Returns "" if nothing is found, in which case
-// chromedp falls back to its own built-in discovery logic.
-// No sudo or Chromium install is needed — if you have Google Chrome installed
-// normally, this will find it automatically.
+// findChromeBinary locates the Chrome/Chromium binary.
+// Priority: CHROME_BIN env var → PATH lookup → known absolute paths → chromedp auto-detect.
 func findChromeBinary() string {
-	// Respect an explicit override via environment variable
 	if bin := os.Getenv("CHROME_BIN"); bin != "" {
 		return bin
 	}
 
-	// Common binary names to try with PATH lookup first
 	names := []string{
-		"google-chrome",
 		"google-chrome-stable",
+		"google-chrome",
 		"chromium",
 		"chromium-browser",
 	}
@@ -507,15 +391,13 @@ func findChromeBinary() string {
 		}
 	}
 
-	// Absolute paths to check (covers most Ubuntu / Debian layouts)
 	absolutePaths := []string{
-		"/usr/bin/google-chrome",
 		"/usr/bin/google-chrome-stable",
+		"/usr/bin/google-chrome",
 		"/usr/bin/chromium-browser",
 		"/usr/bin/chromium",
 		"/snap/bin/chromium",
 		"/opt/google/chrome/google-chrome",
-		"/opt/google/chrome-beta/google-chrome-beta",
 		"/usr/local/bin/google-chrome",
 	}
 	for _, p := range absolutePaths {
@@ -524,5 +406,5 @@ func findChromeBinary() string {
 		}
 	}
 
-	return "" // let chromedp auto-detect
+	return ""
 }
