@@ -12,13 +12,15 @@ import (
 )
 
 // CSVWriter writes raw (uncleaned) listings to a CSV file.
+// It is safe for concurrent use.
 type CSVWriter struct {
 	mu     sync.Mutex
 	file   *os.File
 	writer *csv.Writer
 }
 
-// NewCSVWriter creates (or truncates) the CSV file at the given path.
+// NewCSVWriter creates (or truncates) the CSV file at the given path and
+// writes the header row. Intermediate directories are created automatically.
 func NewCSVWriter(path string) (*CSVWriter, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("csv: create output dir: %w", err)
@@ -31,6 +33,7 @@ func NewCSVWriter(path string) (*CSVWriter, error) {
 
 	w := csv.NewWriter(f)
 
+	// Write header
 	if err := w.Write([]string{
 		"platform", "title", "raw_price", "location", "rating", "url", "description", "scraped_at",
 	}); err != nil {
@@ -42,10 +45,15 @@ func NewCSVWriter(path string) (*CSVWriter, error) {
 	return &CSVWriter{file: f, writer: w}, nil
 }
 
-// WriteRaw appends raw listings to the CSV file.
+// WriteRaw writes the first 10 raw listings to the CSV file (truncating any previous data).
 func (c *CSVWriter) WriteRaw(listings []*models.RawListing) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Limit to first 10 listings
+	if len(listings) > 10 {
+		listings = listings[:10]
+	}
 
 	for _, l := range listings {
 		row := []string{

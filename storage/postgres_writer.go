@@ -12,17 +12,20 @@ import (
 )
 
 // PostgresWriter persists cleaned listings to PostgreSQL.
+// It creates the table on first use and uses batch inserts for efficiency.
 type PostgresWriter struct {
 	db *sql.DB
 }
 
-// NewPostgresWriter opens a connection to PostgreSQL and runs schema migrations.
+// NewPostgresWriter opens a connection to PostgreSQL, runs schema migrations,
+// and returns a ready-to-use PostgresWriter.
 func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: open: %w", err)
 	}
 
+	// Verify connection
 	for i := 0; i < 10; i++ {
 		if err = db.Ping(); err == nil {
 			break
@@ -41,18 +44,19 @@ func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
 	return pw, nil
 }
 
+// migrate creates the listings table and indexes if they do not exist.
 func (pw *PostgresWriter) migrate() error {
 	_, err := pw.db.Exec(`
 		CREATE TABLE IF NOT EXISTS listings (
 			id          SERIAL PRIMARY KEY,
-			platform    VARCHAR(50)   NOT NULL,
-			title       TEXT          NOT NULL,
+			platform    VARCHAR(50)  NOT NULL,
+			title       TEXT         NOT NULL,
 			price       NUMERIC(10,2) NOT NULL DEFAULT 0,
-			location    TEXT          NOT NULL DEFAULT '',
-			rating      NUMERIC(4,2)  NOT NULL DEFAULT 0,
-			url         TEXT          UNIQUE NOT NULL,
-			description TEXT          NOT NULL DEFAULT '',
-			created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+			location    TEXT         NOT NULL DEFAULT '',
+			rating      NUMERIC(4,2) NOT NULL DEFAULT 0,
+			url         TEXT         UNIQUE NOT NULL,
+			description TEXT         NOT NULL DEFAULT '',
+			created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_listings_price    ON listings(price);
@@ -63,19 +67,41 @@ func (pw *PostgresWriter) migrate() error {
 	return err
 }
 
-// Write batch-inserts cleaned listings, ignoring duplicates by URL.
+// Clear deletes all existing listings from the table.
+func (pw *PostgresWriter) Clear() error {
+	_, err := pw.db.Exec("DELETE FROM listings")
+	if err != nil {
+		return fmt.Errorf("postgres: clear: %w", err)
+	}
+	return nil
+}
+
+// Write batch-inserts cleaned listings, clearing old data first and limiting to 10 listings.
 func (pw *PostgresWriter) Write(listings []*models.Listing) error {
 	if len(listings) == 0 {
 		return nil
 	}
 
+	// Clear all old data first
+	if err := pw.Clear(); err != nil {
+		return err
+	}
+
+	// Limit to first 10 listings
+	if len(listings) > 10 {
+		listings = listings[:10]
+	}
+
+	// Build a single multi-row INSERT
 	const batchSize = 50
 	for i := 0; i < len(listings); i += batchSize {
 		end := i + batchSize
 		if end > len(listings) {
 			end = len(listings)
 		}
-		if err := pw.insertBatch(listings[i:end]); err != nil {
+		batch := listings[i:end]
+
+		if err := pw.insertBatch(batch); err != nil {
 			return err
 		}
 	}
@@ -110,7 +136,7 @@ func (pw *PostgresWriter) Close() error {
 	return pw.db.Close()
 }
 
-// FetchAll retrieves all stored listings for insight generation.
+// FetchAll retrieves all stored listings — used by the insight service.
 func (pw *PostgresWriter) FetchAll() ([]*models.Listing, error) {
 	rows, err := pw.db.Query(`
 		SELECT id, platform, title, price, location, rating, url, description, created_at
