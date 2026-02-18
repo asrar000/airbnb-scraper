@@ -1,11 +1,56 @@
 platform,title,raw_price,location,rating,url,description,scraped_at
-airbnb,Apartment in Huai Khwang,$395,N/A,4.94,https://www.airbnb.com/rooms/1492865907189208216?search_mode=regular_search&adults=1&check_in=2026-02-22&check_out=2026-02-27&children=0&infants=0&pets=0&source_impression_id=p3_1771398025_P3g4AvLIppVljPUf&previous_page_section_name=1000&federated_search_id=95cea03e-c373-41a3-88e5-c8272c36a1ac,No description available,2026-02-18T13:00:32+06:00
-airbnb,Apartment in Khlong Toei,$293,N/A,4.95,https://www.airbnb.com/rooms/1597685945984399331?search_mode=regular_search&adults=1&check_in=2026-02-22&check_out=2026-02-27&children=0&infants=0&pets=0&source_impression_id=p3_1771398025_P3dRD1CA_RZrUzgJ&previous_page_section_name=1000&federated_search_id=95cea03e-c373-41a3-88e5-c8272c36a1ac,No description available,2026-02-18T13:00:32+06:00
-airbnb,1BR-Steps to BTS Ekkamai-Sky infinity Pool&Gym,$461,N/A,4.96,https://www.airbnb.com/rooms/783817312247334259?search_mode=regular_search&adults=1&check_in=2026-02-25&check_out=2026-03-02&children=0&infants=0&pets=0&source_impression_id=p3_1771398025_P3m1n0OMXPdb27KL&previous_page_section_name=1000&federated_search_id=95cea03e-c373-41a3-88e5-c8272c36a1ac,No description available,2026-02-18T13:00:32+06:00
-airbnb,Rama9 35sqm 1 bedroom with balcony LOFT7/3 people/rooftop pool/near RCA/near train night market/near tonglor,$290,N/A,4.95,https://www.airbnb.com/rooms/1491700567479589820?search_mode=regular_search&adults=1&check_in=2026-02-27&check_out=2026-03-04&children=0&infants=0&pets=0&source_impression_id=p3_1771398025_P3IHdenSN-8-rEgC&previous_page_section_name=1000&federated_search_id=95cea03e-c373-41a3-88e5-c8272c36a1ac,No description available,2026-02-18T13:00:32+06:00
-airbnb,Market center one bedroom B1D/close to subway/high-rise city view/Siam business district/free pick-up/outdoor pool/fitness/sky bar/four nights pick-up,$301,N/A,4.93,https://www.airbnb.com/rooms/1517423716561808913?search_mode=regular_search&adults=1&check_in=2026-04-01&check_out=2026-04-06&children=0&infants=0&pets=0&source_impression_id=p3_1771398025_P34O9fcCt04EOBpM&previous_page_section_name=1000&federated_search_id=95cea03e-c373-41a3-88e5-c8272c36a1ac,"This special home is a brand new concept apartment designed by a designer. The whole house is located in the heart of Bangkok and close to everything. Includes 1 bedroom, living room, dining room, kitchen and 1 bathroom.
-[Location]
-- Convenient transportation: Sukhumvit core area, 980m walk from Phrom Phong MRT station, 10min walk
-- Four-faced Buddha 4.7km, Siam 8km, Grand Palace 13km
-- 10 min walk to Emporium Mall
-- Convenient living: surrounded by 24-hour convenience stores, big supermarkets, ",2026-02-18T13:00:32+06:00
+airbnb,Designer - KLCC Infinity Pool | LRT | Mall Walk,"$122 
+$104",,4.96,https://www.airbnb.com/rooms/1542784897437294239?search_mode=regular_search&adults=1&check_in=2026-03-13&check_out=2026-03-15&children=0&infants=0&pets=0&source_impression_id=p3_1771406663_P31S769tgDZX1kYB&previous_page_section_name=1000&federated_search_id=6b5d733a-08e1-424b-a5f0-fb38e2e64edc,No description available,2026-02-18T15:24:35+06:00
+airbnb,1 Bed Studio with KLCC View/Rooftop Pool - Netflix,$118,,4.91,https://www.airbnb.com/rooms/30302225?search_mode=regular_search&adults=1&check_in=2026-05-08&check_out=2026-05-10&children=0&infants=0&pets=0&photo_id=940527737&source_impression_id=p3_1771406663_P38plDLeSPpxgA7K&previous_page_section_name=1000&federated_search_id=6b5d733a-08e1-424b-a5f0-fb38e2e64edc,No description available,2026-02-18T15:24:35+06:00
+airbnb,Ceylonz Suites 33A (A) high floor City View,$71,,4.85,https://www.airbnb.com/rooms/635481064627920753?search_mode=regular_search&adults=1&check_in=2026-04-24&check_out=2026-04-26&children=0&infants=0&pets=0&photo_id=1441634044&source_impression_id=p3_1771406663_P3iUNgXHD7KwQ6Q2&previous_page_section_name=1000&federated_search_id=6b5d733a-08e1-424b-a5f0-fb38e2e64edc,No description available,2026-02-18T15:24:35+06:00
+airbnb,#1DKR The Best Infinity Pool at KLCC Studio Room,"$136 
+$106",,4.76,https://www.airbnb.com/rooms/783673553973671564?search_mode=regular_search&adults=1&check_in=2026-03-13&check_out=2026-03-15&children=0&infants=0&pets=0&source_impression_id=p3_1771406663_P3n1fGjDQswH7ECf&previous_page_section_name=1000&federated_search_id=6b5d733a-08e1-424b-a5f0-fb38e2e64edc,No description available,2026-02-18T15:24:35+06:00
+airbnb,The Colony Facing KLCC Pool view TRX Merdeka 118,"$71
+ 
+for 2 nights
+ · Oct 2 – 4
+$71 for 2 nights",Where you’ll be,4.82,https://www.airbnb.com/rooms/1005022077370914380?search_mode=regular_search&adults=1&check_in=2026-10-02&check_out=2026-10-04&children=0&infants=0&pets=0&photo_id=1762791240&source_impression_id=p3_1771406663_P3zA4y4MifnAZC_m&previous_page_section_name=1000&federated_search_id=6b5d733a-08e1-424b-a5f0-fb38e2e64edc,"Our unit facing directly to KLCC View, where you can enjoy Kuala Lumpur View without any blockage. It is located beside Quill City Mall, where a monorail station (Medan Tuanku) just in front of the mall.
+
+The space
+Room 
+- Queen size bed
+- Wall mounted android television
+- Attached bathroom with water heater
+- Air conditioning
+- Basic toiletries (ie, towels, shower gel, toilet papers)
+
+Kitchenette
+-  Basic (Light) cooking allowed 
+-  Pots, pans, bowls, tableware & cutleries
+-  Washing machine (d",2026-02-18T15:24:35+06:00
+airbnb,@72SA2116 BEST Pool View KLTower KLCC MerdekaTower,"$70 
+$61",,5.0,https://www.airbnb.com/rooms/1511415994010519413?search_mode=regular_search&adults=1&check_in=2026-03-13&check_out=2026-03-15&children=0&infants=0&pets=0&source_impression_id=p3_1771406707_P3tLKvrAhiQmUtFK&previous_page_section_name=1000&federated_search_id=76d2d2be-9e0c-4588-9c6f-a4de56ca59d8,No description available,2026-02-18T15:25:22+06:00
+airbnb,Apartment in Kuala Lumpur,"$87 
+$70",,5.0,https://www.airbnb.com/rooms/1485298579734890516?search_mode=regular_search&adults=1&check_in=2026-02-20&check_out=2026-02-22&children=0&infants=0&pets=0&photo_id=2291183119&source_impression_id=p3_1771406707_P3AkTdzTkyAfirmg&previous_page_section_name=1000&federated_search_id=76d2d2be-9e0c-4588-9c6f-a4de56ca59d8,No description available,2026-02-18T15:25:22+06:00
+airbnb,Couple Nest of Love @ KL [One Parking] Wi-Fi,"$92
+ 
+for 2 nights
+ · Mar 6 – 8
+$92 for 2 nights",,4.84,https://www.airbnb.com/rooms/1335063654022352638?search_mode=regular_search&adults=1&check_in=2026-03-06&check_out=2026-03-08&children=0&infants=0&pets=0&photo_id=2069338542&source_impression_id=p3_1771406707_P3oAvV4nt2-Jh4QL&previous_page_section_name=1000&federated_search_id=76d2d2be-9e0c-4588-9c6f-a4de56ca59d8,No description available,2026-02-18T15:25:22+06:00
+airbnb,CeylonZ Suites Kuala Lumpur. 33a (B) City View,$81,Where you’ll be,4.9,https://www.airbnb.com/rooms/569049214818933247?search_mode=regular_search&adults=1&check_in=2026-05-22&check_out=2026-05-24&children=0&infants=0&pets=0&photo_id=1347526322&source_impression_id=p3_1771406707_P3X4bneeUO9X434c&previous_page_section_name=1000&federated_search_id=76d2d2be-9e0c-4588-9c6f-a4de56ca59d8,"Located in the HEART of Kuala Lumpur. 
+
+Building address is Exsim Ceylonz Suites, Persiaran Raja Chulan, Bukit Kewangan, 50200 Kuala Lumpur, Federal Territory of Kuala Lumpur
+
+⚠ IMPORTANT: The Windows are Dangerous. Please take extra care, especially with children.
+
+TV is not provided in this unit. If you need a TV please check our other listings.
+
+Unit is on level 34th Floor (The Highest is 35 )
+
+No Deposit needed
+
+Free Parking
+
+Free WIFI
+
+Free Infinity Pool and Gym
+
+The Cleanest space
+
+The spa",2026-02-18T15:25:22+06:00
+airbnb,1 Bed Studio-Rooftop Infinity Pool KLCC TwinTowers,$118,Where you’ll be,4.89,https://www.airbnb.com/rooms/34461008?search_mode=regular_search&adults=1&check_in=2026-05-15&check_out=2026-05-17&children=0&infants=0&pets=0&photo_id=1696876659&source_impression_id=p3_1771406707_P32KuNdt1ULddAcO&previous_page_section_name=1000&federated_search_id=76d2d2be-9e0c-4588-9c6f-a4de56ca59d8,"Close to Kuala Lumpur heartbeat and the majestic KLCC Petronas Twin Tower, Shopping Paradise of Bukit Bintang and food and entertainment outlets in the Golden Triangle. All rooms are overlooking the majestic KLCC Twin Towers and the Titiwangsa lake. We offer hot water shower, AC and a well furnished clean room. The infinity pool overlooking the stunning view of KLCC and KL Tower and Kuala Lumpur panoramic view. As a safety precaution, all areas in the room are pre-disinfected before checking in.",2026-02-18T15:25:22+06:00

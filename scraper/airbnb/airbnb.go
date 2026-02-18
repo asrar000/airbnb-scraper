@@ -20,7 +20,6 @@ const (
 	platform = "airbnb"
 )
 
-// Scraper orchestrates the Airbnb scraping process.
 type Scraper struct {
 	cfg        *config.Config
 	logger     *utils.Logger
@@ -32,7 +31,6 @@ type Scraper struct {
 	listings []*models.RawListing
 }
 
-// New creates a ready-to-use Airbnb Scraper.
 func New(cfg *config.Config, logger *utils.Logger) *Scraper {
 	return &Scraper{
 		cfg:        cfg,
@@ -48,7 +46,6 @@ func New(cfg *config.Config, logger *utils.Logger) *Scraper {
 	}
 }
 
-// Scrape is the entry point that drives pagination and detail-page scraping.
 func (s *Scraper) Scrape() ([]*models.RawListing, error) {
 	s.logger.Info("[airbnb] Starting scrape — target: %d pages, %d listings/page",
 		s.cfg.PagesToScrape, s.cfg.ListingsPerPage)
@@ -72,12 +69,10 @@ func (s *Scraper) Scrape() ([]*models.RawListing, error) {
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer cancelAlloc()
 
-	// Suppress chromedp log noise
 	silentCtx, cancelSilent := chromedp.NewContext(allocCtx, chromedp.WithLogf(func(string, ...interface{}) {}))
 	defer cancelSilent()
 	allocCtx = silentCtx
 
-	// Step 1: Go to homepage and find "Popular homes in [Location]" link
 	searchURL, err := s.findPopularHomesLink(allocCtx)
 	if err != nil {
 		return nil, fmt.Errorf("could not find popular homes section: %w", err)
@@ -85,10 +80,9 @@ func (s *Scraper) Scrape() ([]*models.RawListing, error) {
 
 	s.logger.Info("[airbnb] Found popular homes URL: %s", searchURL)
 
-	// Step 2: Scrape pages
 	currentURL := searchURL
 	for page := 1; page <= s.cfg.PagesToScrape; page++ {
-		s.logger.Info("[airbnb] Scraping page %d — URL: %s", page, currentURL)
+		s.logger.Info("[airbnb] Scraping page %d", page)
 
 		pageListings, nextURL, err := s.scrapePage(allocCtx, currentURL, page)
 		if err != nil {
@@ -101,19 +95,25 @@ func (s *Scraper) Scrape() ([]*models.RawListing, error) {
 			break
 		}
 
-		// Enrich listings with detail page data if needed
 		s.enrichListings(allocCtx, pageListings)
 
 		s.mu.Lock()
 		s.listings = append(s.listings, pageListings...)
 		s.mu.Unlock()
 
-		s.logger.Info("[airbnb] Page %d done — collected %d listings so far", page, len(s.listings))
+		s.logger.Info("[airbnb] Page %d done — total collected: %d listings", page, len(s.listings))
 
-		if nextURL == "" || page >= s.cfg.PagesToScrape {
+		if page >= s.cfg.PagesToScrape {
+			s.logger.Info("[airbnb] Reached page limit (%d pages)", s.cfg.PagesToScrape)
 			break
 		}
 
+		if nextURL == "" {
+			s.logger.Warn("[airbnb] No next page URL found — stopping pagination")
+			break
+		}
+
+		s.logger.Info("[airbnb] Moving to page %d — URL: %s", page+1, nextURL)
 		currentURL = nextURL
 		time.Sleep(time.Duration(s.cfg.RateLimitMs) * time.Millisecond)
 	}
@@ -122,8 +122,6 @@ func (s *Scraper) Scrape() ([]*models.RawListing, error) {
 	return s.listings, nil
 }
 
-// findPopularHomesLink navigates to the Airbnb homepage and finds the first
-// "Popular homes in [Location]" section link.
 func (s *Scraper) findPopularHomesLink(allocCtx context.Context) (string, error) {
 	var sectionURL string
 
@@ -140,59 +138,38 @@ func (s *Scraper) findPopularHomesLink(allocCtx context.Context) (string, error)
 			chromedp.Navigate(startURL),
 			chromedp.Sleep(5*time.Second),
 
-			// Find "Popular homes in [Location]" heading and extract the first link in that section
 			chromedp.Evaluate(`
 				(function() {
-					// Look for headings containing "Popular homes in"
 					var headings = document.querySelectorAll('h2, h3, div[role="heading"]');
 					for (var i = 0; i < headings.length; i++) {
 						var text = headings[i].textContent || '';
 						if (text.toLowerCase().includes('popular homes in')) {
-							// Find the parent section
 							var section = headings[i].closest('section') || 
 							              headings[i].closest('div[data-section-id]') ||
 							              headings[i].parentElement;
 							
 							if (section) {
-								// Look for the first property card link
-								var link = section.querySelector('a[href*="/rooms/"]');
-								if (link && link.href) {
-									// We want the search results page, not individual room
-									// Look for "Show all" or section wrapper link
-									var showAllLink = section.querySelector('a[aria-label*="Show all"]') ||
-									                  section.querySelector('a[href*="/s/"]');
-									if (showAllLink && showAllLink.href) {
-										return showAllLink.href;
-									}
-									
-									// Fallback: derive search URL from the location mentioned in heading
-									var match = text.match(/popular homes in ([^<]+)/i);
-									if (match && match[1]) {
-										var location = match[1].trim();
-										return 'https://www.airbnb.com/s/' + encodeURIComponent(location) + '/homes';
-									}
+								var showAllLink = section.querySelector('a[aria-label*="Show all"]') ||
+								                  section.querySelector('a[href*="/s/"]');
+								if (showAllLink && showAllLink.href) {
+									return showAllLink.href;
+								}
+								
+								var match = text.match(/popular homes in ([^<]+)/i);
+								if (match && match[1]) {
+									var location = match[1].trim();
+									return 'https://www.airbnb.com/s/' + encodeURIComponent(location) + '/homes';
 								}
 							}
 						}
 					}
 					
-					// Ultimate fallback: look for any major carousel section with property links
 					var sections = document.querySelectorAll('section');
 					for (var j = 0; j < sections.length; j++) {
 						var links = sections[j].querySelectorAll('a[href*="/rooms/"]');
 						if (links.length >= 3) {
-							// This looks like a property carousel
-							var firstLink = links[0].href;
-							// Try to find a "view all" or similar
 							var allLink = sections[j].querySelector('a[href*="/s/"]');
 							if (allLink) return allLink.href;
-							
-							// Extract location from the URL and create search
-							var roomMatch = firstLink.match(/airbnb\.com\/rooms\/(\d+)/);
-							if (roomMatch) {
-								// Fallback to Bangkok
-								return 'https://www.airbnb.com/s/Bangkok/homes';
-							}
 						}
 					}
 					
@@ -206,7 +183,6 @@ func (s *Scraper) findPopularHomesLink(allocCtx context.Context) (string, error)
 		}
 
 		if foundURL == "" {
-			// Hard fallback
 			s.logger.Warn("[airbnb] Could not find popular homes section, using Bangkok fallback")
 			foundURL = "https://www.airbnb.com/s/Bangkok/homes"
 		}
@@ -218,7 +194,6 @@ func (s *Scraper) findPopularHomesLink(allocCtx context.Context) (string, error)
 	return sectionURL, err
 }
 
-// scrapePage loads a search results page and extracts listings.
 func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum int) ([]*models.RawListing, string, error) {
 	var rawListings []*models.RawListing
 	var nextURL string
@@ -243,26 +218,25 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 
 		err := chromedp.Run(ctx,
 			chromedp.Navigate(pageURL),
-			chromedp.Sleep(6*time.Second),
+			chromedp.Sleep(7*time.Second),
 
-			// Scroll to load all cards
+			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight / 3)`, nil),
+			chromedp.Sleep(2*time.Second),
 			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight / 2)`, nil),
 			chromedp.Sleep(2*time.Second),
 			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight)`, nil),
-			chromedp.Sleep(2*time.Second),
+			chromedp.Sleep(3*time.Second),
 
-			// Extract property cards — matching the structure from the PDF screenshot
 			chromedp.Evaluate(`
 				(function() {
 					var results = [];
 					var limit = `+fmt.Sprintf("%d", s.cfg.ListingsPerPage)+`;
 					
-					// Strategy 1: Find listing cards (most common structure)
 					var cardSelectors = [
 						'[data-testid="card-container"]',
 						'[itemprop="itemListElement"]',
 						'div[data-testid="listing-card-wrapper"]',
-						'div[class*="c1yo0219"]' // Airbnb's obfuscated card class
+						'div[class*="cy5jw6o"]'
 					];
 					
 					var cards = [];
@@ -271,7 +245,6 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 						if (cards.length > 0) break;
 					}
 					
-					// Strategy 2: Fallback to room links
 					if (cards.length === 0) {
 						var roomLinks = document.querySelectorAll('a[href*="/rooms/"]');
 						var seen = {};
@@ -281,7 +254,6 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 							if (!href || seen[href]) continue;
 							seen[href] = true;
 							
-							// Try to find parent card container
 							var cardDiv = link.closest('[role="group"]') || 
 							              link.closest('div[class*="g1qv1ctd"]') ||
 							              link.closest('div');
@@ -290,7 +262,7 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 							var lines = innerText.split('\n').map(function(l){return l.trim();}).filter(Boolean);
 							
 							results.push({
-								title:    lines[0] || 'N/A',
+								title:    lines[0] || 'Property',
 								price:    lines.find(function(l){return l.match(/\$|฿|€|£/);}) || 'N/A',
 								location: lines[1] || 'N/A',
 								rating:   lines.find(function(l){return l.match(/^\d\.\d+/);}) || '',
@@ -300,34 +272,29 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 						return results;
 					}
 					
-					// Strategy 1: Parse structured cards
 					var seen = {};
 					for (var i = 0; i < cards.length && results.length < limit; i++) {
 						var card = cards[i];
 						
-						// Title - the property name
 						var titleEl = card.querySelector('[data-testid="listing-card-title"]') ||
 						              card.querySelector('div[id*="title"]') ||
 						              card.querySelector('[class*="t1jojoys"]');
-						var title = titleEl ? titleEl.innerText.trim() : '';
+						var title = titleEl ? titleEl.innerText.trim() : 'Property';
 						
-						// Price - look for price per night
-						var priceEl = card.querySelector('[data-testid="price-availability-row"]') ||
-						              card.querySelector('span[class*="price"]') ||
-						              card.querySelector('div._1jo4hgw');
+						var priceSpans = card.querySelectorAll('span');
 						var price = '';
-						if (priceEl) {
-							var priceText = priceEl.innerText;
-							var priceMatch = priceText.match(/(\$|฿|€|£)\s*[\d,]+/);
-							price = priceMatch ? priceMatch[0] : priceText.split('\n')[0];
+						for (var ps = 0; ps < priceSpans.length; ps++) {
+							var txt = priceSpans[ps].innerText;
+							if (txt.match(/\$|฿|€|£/) && txt.match(/\d/)) {
+								price = txt.trim();
+								break;
+							}
 						}
 						
-						// Location - subtitle text
 						var locEl = card.querySelector('[data-testid="listing-card-subtitle"]') ||
 						            card.querySelector('span[class*="t6mzqp7"]');
-						var location = locEl ? locEl.innerText.trim() : '';
+						var location = locEl ? locEl.innerText.trim() : 'N/A';
 						
-						// Rating - stars/reviews
 						var ratingEl = card.querySelector('[aria-label*="rating"]') ||
 						               card.querySelector('span[class*="r4a59j5"]');
 						var rating = '';
@@ -337,7 +304,6 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 							rating = ratingMatch ? ratingMatch[1] : '';
 						}
 						
-						// URL - link to property detail page
 						var linkEl = card.querySelector('a[href*="/rooms/"]');
 						var url = linkEl ? linkEl.href : '';
 						
@@ -345,9 +311,9 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 						seen[url] = true;
 						
 						results.push({
-							title:    title || 'N/A',
+							title:    title,
 							price:    price || 'N/A',
-							location: location || 'N/A',
+							location: location,
 							rating:   rating,
 							url:      url
 						});
@@ -357,15 +323,13 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 				})()
 			`, &cards),
 
-			// Find next page button/link
 			chromedp.Evaluate(`
 				(function() {
-					// Look for "Next" button in pagination
 					var nextBtns = [
 						document.querySelector('a[aria-label="Next"]'),
 						document.querySelector('a[aria-label="next"]'),
 						document.querySelector('[data-testid="pagination-next-button"]'),
-						document.querySelector('nav a[href*="items_offset"]')
+						document.querySelector('a[aria-label="Next page"]')
 					];
 					
 					for (var i = 0; i < nextBtns.length; i++) {
@@ -374,12 +338,24 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 						}
 					}
 					
-					// Look in pagination links for next page
-					var paginationLinks = document.querySelectorAll('nav a, div[role="navigation"] a');
-					for (var j = 0; j < paginationLinks.length; j++) {
-						var text = paginationLinks[j].innerText.toLowerCase();
-						if (text === 'next' || text === '>') {
-							return paginationLinks[j].href;
+					var navLinks = document.querySelectorAll('nav a, div[role="navigation"] a');
+					for (var j = 0; j < navLinks.length; j++) {
+						var text = navLinks[j].innerText.toLowerCase();
+						var ariaLabel = (navLinks[j].getAttribute('aria-label') || '').toLowerCase();
+						if (text === 'next' || text === '>' || ariaLabel.includes('next')) {
+							return navLinks[j].href;
+						}
+					}
+					
+					var allLinks = document.querySelectorAll('a[href]');
+					for (var k = 0; k < allLinks.length; k++) {
+						var href = allLinks[k].href;
+						if (href.includes('items_offset=') || href.includes('cursor=')) {
+							var currentOffset = window.location.href.match(/items_offset=(\d+)/);
+							var linkOffset = href.match(/items_offset=(\d+)/);
+							if (linkOffset && (!currentOffset || parseInt(linkOffset[1]) > parseInt(currentOffset[1] || '0'))) {
+								return href;
+							}
 						}
 					}
 					
@@ -421,7 +397,6 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 	return rawListings, nextURL, err
 }
 
-// enrichListings visits detail pages for listings that have insufficient data.
 func (s *Scraper) enrichListings(allocCtx context.Context, listings []*models.RawListing) {
 	for _, listing := range listings {
 		l := listing
@@ -429,12 +404,6 @@ func (s *Scraper) enrichListings(allocCtx context.Context, listings []*models.Ra
 			continue
 		}
 
-		// Only fetch detail page if we're missing critical info OR to get description
-		needsEnrichment := l.Title == "" || l.Title == "N/A" ||
-			l.RawPrice == "" || l.RawPrice == "N/A" ||
-			l.Location == "" || l.Location == "N/A"
-
-		// Always get description from detail page
 		s.pool.Submit(func() {
 			enriched, err := s.scrapeDetailPage(allocCtx, l.URL)
 			if err != nil {
@@ -442,23 +411,18 @@ func (s *Scraper) enrichListings(allocCtx context.Context, listings []*models.Ra
 				return
 			}
 
-			// Update fields if they were missing
-			if needsEnrichment {
-				if enriched.Title != "" && enriched.Title != "N/A" {
-					l.Title = enriched.Title
-				}
-				if enriched.RawPrice != "" && enriched.RawPrice != "N/A" {
-					l.RawPrice = enriched.RawPrice
-				}
-				if enriched.Location != "" && enriched.Location != "N/A" {
-					l.Location = enriched.Location
-				}
-				if enriched.Rating != "" {
-					l.Rating = enriched.Rating
-				}
+			if enriched.Title != "" && enriched.Title != "N/A" && enriched.Title != "Property" {
+				l.Title = enriched.Title
 			}
-
-			// Always update description
+			if enriched.RawPrice != "" && enriched.RawPrice != "N/A" {
+				l.RawPrice = enriched.RawPrice
+			}
+			if enriched.Location != "" && enriched.Location != "N/A" {
+				l.Location = enriched.Location
+			}
+			if enriched.Rating != "" {
+				l.Rating = enriched.Rating
+			}
 			l.Description = enriched.Description
 
 			s.logger.Debug("[airbnb] Enriched: %s", l.Title)
@@ -467,7 +431,6 @@ func (s *Scraper) enrichListings(allocCtx context.Context, listings []*models.Ra
 	s.pool.Wait()
 }
 
-// scrapeDetailPage visits a property detail page and extracts full information.
 func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*models.RawListing, error) {
 	listing := &models.RawListing{URL: url, Platform: platform}
 
@@ -490,7 +453,7 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 
 		err := chromedp.Run(ctx,
 			chromedp.Navigate(url),
-			chromedp.Sleep(4*time.Second),
+			chromedp.Sleep(5*time.Second),
 
 			chromedp.Evaluate(`
 				(function() {
@@ -502,29 +465,25 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 						description: ''
 					};
 					
-					// Title
 					var titleEl = document.querySelector('h1[class*="hpipapi"]') ||
 					              document.querySelector('h1') ||
 					              document.querySelector('[data-section-id="TITLE_DEFAULT"] h1');
 					if (titleEl) result.title = titleEl.innerText.trim();
 					
-					// Price
-					var priceEl = document.querySelector('span[class*="_tyxjp1"]') ||
-					              document.querySelector('span[class*="price"]') ||
-					              document.querySelector('[data-testid="book-it-default"] span');
-					if (priceEl) {
-						var priceText = priceEl.innerText;
-						var match = priceText.match(/(\$|฿|€|£)\s*[\d,]+/);
-						result.price = match ? match[0] : priceText;
+					var priceEls = document.querySelectorAll('span');
+					for (var p = 0; p < priceEls.length; p++) {
+						var txt = priceEls[p].innerText;
+						if (txt.match(/\$|฿|€|£/) && txt.match(/\d/) && txt.length < 50) {
+							result.price = txt.trim();
+							break;
+						}
 					}
 					
-					// Location
 					var locEl = document.querySelector('[data-section-id="LOCATION_DEFAULT"] h2') ||
 					            document.querySelector('button[aria-label*="location"] span') ||
 					            document.querySelector('div[class*="l7n4lsf"] span');
 					if (locEl) result.location = locEl.innerText.trim();
 					
-					// Rating
 					var ratingEl = document.querySelector('button[aria-label*="rating"]') ||
 					               document.querySelector('span[class*="r1dxllyb"]') ||
 					               document.querySelector('[data-testid="pdp-reviews-highlight-banner"] span');
@@ -534,7 +493,6 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 						result.rating = ratingMatch ? ratingMatch[1] : '';
 					}
 					
-					// Description
 					var descSelectors = [
 						'[data-section-id="DESCRIPTION_DEFAULT"] span',
 						'div[class*="ll4r2nl"] div[class*="lgx66tx"] span',
@@ -548,7 +506,6 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 						}
 					}
 					
-					// Fallback description from paragraphs
 					if (!result.description) {
 						var paras = document.querySelectorAll('main p');
 						var texts = [];
@@ -580,7 +537,6 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 	return listing, err
 }
 
-// findChromeBinary locates Chrome/Chromium binary.
 func findChromeBinary() string {
 	if bin := os.Getenv("CHROME_BIN"); bin != "" {
 		return bin
