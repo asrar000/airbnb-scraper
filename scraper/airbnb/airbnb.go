@@ -254,17 +254,25 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 							if (!href || seen[href]) continue;
 							seen[href] = true;
 							
-							var cardDiv = link.closest('[role="group"]') || 
-							              link.closest('div[class*="g1qv1ctd"]') ||
-							              link.closest('div');
-							
+							var cardDiv = link.closest('[role="group"]') || link.closest('div');
 							var innerText = cardDiv ? cardDiv.innerText : link.innerText;
 							var lines = innerText.split('\n').map(function(l){return l.trim();}).filter(Boolean);
 							
+							// Extract location (usually second or third line)
+							var location = '';
+							for (var li = 0; li < Math.min(lines.length, 5); li++) {
+								var line = lines[li];
+								if (!line.match(/\$/) && !line.match(/^\d+\.\d+/) && 
+								    line.length > 5 && line.length < 100) {
+									location = line;
+									break;
+								}
+							}
+							
 							results.push({
 								title:    lines[0] || 'Property',
-								price:    lines.find(function(l){return l.match(/\$|฿|€|£/);}) || 'N/A',
-								location: lines[1] || 'N/A',
+								price:    innerText,  // Send full text for better price parsing
+								location: location || 'Unknown',
 								rating:   lines.find(function(l){return l.match(/^\d\.\d+/);}) || '',
 								url:      href
 							});
@@ -281,19 +289,28 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 						              card.querySelector('[class*="t1jojoys"]');
 						var title = titleEl ? titleEl.innerText.trim() : 'Property';
 						
-						var priceSpans = card.querySelectorAll('span');
-						var price = '';
-						for (var ps = 0; ps < priceSpans.length; ps++) {
-							var txt = priceSpans[ps].innerText;
-							if (txt.match(/\$|฿|€|£/) && txt.match(/\d/)) {
-								price = txt.trim();
-								break;
+						// Get ALL text from card for price extraction
+						var cardText = card.innerText;
+						
+						// Location - try multiple selectors
+						var locEl = card.querySelector('[data-testid="listing-card-subtitle"]') ||
+						            card.querySelector('span[class*="t6mzqp7"]') ||
+						            card.querySelector('[class*="subtitle"]');
+						var location = '';
+						if (locEl) {
+							location = locEl.innerText.trim();
+						} else {
+							// Fallback: find first reasonable text line that's not price/rating
+							var allText = cardText.split('\n').map(function(l){return l.trim();});
+							for (var j = 0; j < allText.length; j++) {
+								var line = allText[j];
+								if (!line.match(/\$/) && !line.match(/^\d+\.\d+/) && 
+								    line.length > 3 && line.length < 100 && line !== title) {
+									location = line;
+									break;
+								}
 							}
 						}
-						
-						var locEl = card.querySelector('[data-testid="listing-card-subtitle"]') ||
-						            card.querySelector('span[class*="t6mzqp7"]');
-						var location = locEl ? locEl.innerText.trim() : 'N/A';
 						
 						var ratingEl = card.querySelector('[aria-label*="rating"]') ||
 						               card.querySelector('span[class*="r4a59j5"]');
@@ -312,8 +329,8 @@ func (s *Scraper) scrapePage(allocCtx context.Context, pageURL string, pageNum i
 						
 						results.push({
 							title:    title,
-							price:    price || 'N/A',
-							location: location,
+							price:    cardText,  // Full card text for better price parsing
+							location: location || 'Unknown',
 							rating:   rating,
 							url:      url
 						});
@@ -411,18 +428,20 @@ func (s *Scraper) enrichListings(allocCtx context.Context, listings []*models.Ra
 				return
 			}
 
+			// Only overwrite if detail page has better data
 			if enriched.Title != "" && enriched.Title != "N/A" && enriched.Title != "Property" {
 				l.Title = enriched.Title
 			}
 			if enriched.RawPrice != "" && enriched.RawPrice != "N/A" {
 				l.RawPrice = enriched.RawPrice
 			}
-			if enriched.Location != "" && enriched.Location != "N/A" {
+			if enriched.Location != "" && enriched.Location != "N/A" && enriched.Location != "Unknown" {
 				l.Location = enriched.Location
 			}
 			if enriched.Rating != "" {
 				l.Rating = enriched.Rating
 			}
+			// Always update description since cards don't have it
 			l.Description = enriched.Description
 
 			s.logger.Debug("[airbnb] Enriched: %s", l.Title)
@@ -455,6 +474,26 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 			chromedp.Navigate(url),
 			chromedp.Sleep(5*time.Second),
 
+			// Scroll down to make sure booking section with location is visible
+			chromedp.Evaluate(`window.scrollTo(0, 800)`, nil),
+			chromedp.Sleep(1*time.Second),
+
+			// Try to click "Show more" button
+			chromedp.Evaluate(`
+				(function() {
+					var buttons = document.querySelectorAll('button');
+					for (var i = 0; i < buttons.length; i++) {
+						var text = buttons[i].innerText.toLowerCase();
+						if (text.includes('show more') || text.includes('read more')) {
+							buttons[i].click();
+							return true;
+						}
+					}
+					return false;
+				})()
+			`, nil),
+			chromedp.Sleep(2*time.Second),
+
 			chromedp.Evaluate(`
 				(function() {
 					var result = {
@@ -465,55 +504,73 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 						description: ''
 					};
 					
-					var titleEl = document.querySelector('h1[class*="hpipapi"]') ||
-					              document.querySelector('h1') ||
-					              document.querySelector('[data-section-id="TITLE_DEFAULT"] h1');
+					var titleEl = document.querySelector('h1');
 					if (titleEl) result.title = titleEl.innerText.trim();
 					
-					var priceEls = document.querySelectorAll('span');
-					for (var p = 0; p < priceEls.length; p++) {
-						var txt = priceEls[p].innerText;
-						if (txt.match(/\$|฿|€|£/) && txt.match(/\d/) && txt.length < 50) {
-							result.price = txt.trim();
-							break;
+					// Get full page text for price extraction
+					result.price = document.body.innerText;
+					
+					// Location - look for "X nights in [Location]" pattern near booking section
+					var allText = document.body.innerText;
+					var nightsInMatch = allText.match(/\d+\s*nights?\s+in\s+([^\n]+)/i);
+					if (nightsInMatch && nightsInMatch[1]) {
+						result.location = nightsInMatch[1].trim();
+					}
+					
+					// Fallback location strategies
+					if (!result.location) {
+						var locSelectors = [
+							'[data-section-id="LOCATION_DEFAULT"] h2',
+							'button[aria-label*="location"]',
+							'div[class*="l7n4lsf"]'
+						];
+						for (var ls = 0; ls < locSelectors.length; ls++) {
+							var locEl = document.querySelector(locSelectors[ls]);
+							if (locEl) {
+								result.location = locEl.innerText.trim();
+								break;
+							}
 						}
 					}
 					
-					var locEl = document.querySelector('[data-section-id="LOCATION_DEFAULT"] h2') ||
-					            document.querySelector('button[aria-label*="location"] span') ||
-					            document.querySelector('div[class*="l7n4lsf"] span');
-					if (locEl) result.location = locEl.innerText.trim();
-					
-					var ratingEl = document.querySelector('button[aria-label*="rating"]') ||
-					               document.querySelector('span[class*="r1dxllyb"]') ||
-					               document.querySelector('[data-testid="pdp-reviews-highlight-banner"] span');
+					var ratingEl = document.querySelector('[aria-label*="rating"]');
 					if (ratingEl) {
-						var ratingText = ratingEl.innerText || ratingEl.getAttribute('aria-label') || '';
+						var ratingText = ratingEl.getAttribute('aria-label') || ratingEl.innerText || '';
 						var ratingMatch = ratingText.match(/(\d\.\d+)/);
 						result.rating = ratingMatch ? ratingMatch[1] : '';
 					}
 					
+					// Description - after clicking "Show more"
 					var descSelectors = [
-						'[data-section-id="DESCRIPTION_DEFAULT"] span',
-						'div[class*="ll4r2nl"] div[class*="lgx66tx"] span',
-						'[data-plugin-in-point-id="DESCRIPTION_DEFAULT"] span'
+						'[data-section-id="DESCRIPTION_DEFAULT"]',
+						'div[class*="ll4r2nl"]'
 					];
+					
 					for (var i = 0; i < descSelectors.length; i++) {
 						var descEl = document.querySelector(descSelectors[i]);
-						if (descEl && descEl.innerText.length > 30) {
-							result.description = descEl.innerText.trim().substring(0, 500);
-							break;
+						if (descEl) {
+							var text = descEl.innerText.trim();
+							if (text.length > 30) {
+								result.description = text.substring(0, 1000);
+								break;
+							}
+						}
+					}
+					
+					if (!result.description || result.description.length < 30) {
+						var paras = document.querySelectorAll('main p');
+						var texts = [];
+						for (var j = 0; j < paras.length && texts.join(' ').length < 800; j++) {
+							var t = paras[j].innerText.trim();
+							if (t.length > 20) texts.push(t);
+						}
+						if (texts.length > 0) {
+							result.description = texts.join(' ').substring(0, 1000);
 						}
 					}
 					
 					if (!result.description) {
-						var paras = document.querySelectorAll('main p');
-						var texts = [];
-						for (var j = 0; j < paras.length && texts.join(' ').length < 400; j++) {
-							var t = paras[j].innerText.trim();
-							if (t.length > 20) texts.push(t);
-						}
-						result.description = texts.join(' ').substring(0, 500) || 'No description available';
+						result.description = 'Description not available';
 					}
 					
 					return result;
