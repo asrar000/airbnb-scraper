@@ -1,6 +1,7 @@
 package services
 
 import (
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -12,11 +13,18 @@ import (
 )
 
 var (
-	// Extract all price patterns like $122, $104, etc.
+	// Matches "$122", "$1,200", "$122.50"
 	priceRegexp = regexp.MustCompile(`\$\s*(\d+(?:,\d{3})*(?:\.\d{2})?)`)
-	// nightsRegexp captures "X nights" or "X night" patterns
+
+	// Matches "X night" or "X nights" for multi-night total price
 	nightsRegexp = regexp.MustCompile(`(\d+)\s*nights?`)
-	// ratingRegexp captures a numeric rating in the 0.0–5.0 range
+
+	// Per-night price patterns: "$122 / night", "$122/night", "$122 per night", "$122 night"
+	perNightRegexp = regexp.MustCompile(`\$\s*(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(?:/\s*night|per\s+night|\bnight\b)`)
+
+	// "X nights in Location" total pricing block — e.g. "$244 for 2 nights"
+	totalForNightsRegexp = regexp.MustCompile(`\$\s*(\d+(?:,\d{3})*(?:\.\d{2})?)\s+for\s+(\d+)\s*nights?`)
+
 	ratingRegexp = regexp.MustCompile(`\b([0-5](?:\.\d{1,2})?)\b`)
 )
 
@@ -49,7 +57,7 @@ func (c *Cleaner) Clean(raw []*models.RawListing) []*models.Listing {
 			Platform:    normalisePlatform(r.Platform),
 			Title:       normaliseText(r.Title),
 			Price:       c.parsePrice(r.RawPrice),
-			Location:    normaliseText(r.Location),
+			Location:    c.parseLocation(r.Location, r.RawPrice),
 			Rating:      c.parseRating(r.Rating),
 			URL:         url,
 			Description: normaliseText(r.Description),
@@ -64,58 +72,94 @@ func (c *Cleaner) Clean(raw []*models.RawListing) []*models.Listing {
 	return result
 }
 
-// parsePrice handles:
-// "$122 $104 for 2 nights" → $104 (lowest visible price) / 2 nights = $52/night
-// "$71 for 2 nights" → $71 / 2 = $35.5/night
+// parsePrice handles the structured price strings produced by the scraper:
+//   "$66 for 2 nights"  → 66/2 = $33/night
+//   "$73 per night"     → $73/night
+//   "$45 for 1 night"   → $45/night
+// Falls back to regex extraction for any other format.
 func (c *Cleaner) parsePrice(raw string) float64 {
 	if raw == "" || raw == "N/A" {
 		return 0
 	}
 
-	// Extract all dollar amounts
-	matches := priceRegexp.FindAllStringSubmatch(raw, -1)
-	if len(matches) == 0 {
-		return 0
+	preview := raw
+	if len(preview) > 150 {
+		preview = preview[:150]
+	}
+	c.logger.Debug("[cleaner] parsePrice input: %q", preview)
+
+	// Strategy 1: "$X for N nights" — divide total by nights
+	if m := totalForNightsRegexp.FindStringSubmatch(raw); len(m) > 2 {
+		total := parseDollarAmount(m[1])
+		nights, _ := strconv.Atoi(m[2])
+		if total > 0 && nights > 0 {
+			perNight := math.Round((total/float64(nights))*100) / 100
+			c.logger.Debug("[cleaner] $%.2f / %d nights = $%.2f/night", total, nights, perNight)
+			return perNight
+		}
 	}
 
-	var prices []float64
-	for _, match := range matches {
-		if len(match) > 1 {
-			// Remove commas from numbers like 1,200
-			numStr := strings.ReplaceAll(match[1], ",", "")
-			val, err := strconv.ParseFloat(numStr, 64)
-			if err == nil && val > 0 {
-				prices = append(prices, val)
+	// Strategy 2: explicit per-night label
+	if m := perNightRegexp.FindStringSubmatch(raw); len(m) > 1 {
+		val := parseDollarAmount(m[1])
+		if val > 0 {
+			c.logger.Debug("[cleaner] Per-night: $%.2f", val)
+			return val
+		}
+	}
+
+	// Strategy 3: first dollar amount on the line (last resort)
+	matches := priceRegexp.FindAllStringSubmatch(raw, -1)
+	for _, m := range matches {
+		if len(m) > 1 {
+			val := parseDollarAmount(m[1])
+			if val > 0 && val < 10000 {
+				c.logger.Debug("[cleaner] Fallback price: $%.2f", val)
+				return val
 			}
 		}
 	}
 
-	if len(prices) == 0 {
-		return 0
+	return 0
+}
+
+// parseLocation uses the pre-set section location if it's meaningful,
+// otherwise tries to extract it from the raw page text.
+func (c *Cleaner) parseLocation(location, rawPageText string) string {
+	junkPhrases := []string{
+		"where you'll be", "available next month", "add dates",
+		"check out homes", "things to do", "inspiration",
+	}
+	isJunk := func(s string) bool {
+		lower := strings.ToLower(s)
+		for _, j := range junkPhrases {
+			if strings.Contains(lower, j) {
+				return true
+			}
+		}
+		return false
 	}
 
-	// If multiple prices (strikethrough + current), take the LOWEST (current price)
-	finalPrice := prices[0]
-	for _, p := range prices {
-		if p < finalPrice {
-			finalPrice = p
+	loc := strings.TrimSpace(location)
+
+	// Keep it if it's a clean section-derived value
+	if loc != "" && loc != "N/A" && loc != "Unknown" &&
+		!strings.Contains(loc, "\n") && len(loc) < 80 && !isJunk(loc) {
+		return normaliseText(loc)
+	}
+
+	// Try extracting from page body as fallback
+	if rawPageText != "" {
+		re := regexp.MustCompile(`\d+\s*nights?\s+in\s+([^\n$\d]{3,60})`)
+		if m := re.FindStringSubmatch(rawPageText); len(m) > 1 {
+			extracted := strings.TrimSpace(m[1])
+			if extracted != "" && !isJunk(extracted) {
+				return normaliseText(extracted)
+			}
 		}
 	}
 
-	// Check for multi-night pricing
-	nightsMatch := nightsRegexp.FindStringSubmatch(raw)
-	if len(nightsMatch) >= 2 {
-		nights, err := strconv.Atoi(nightsMatch[1])
-		if err == nil && nights > 1 {
-			perNightPrice := finalPrice / float64(nights)
-			c.logger.Debug("[cleaner] Price: $%.2f for %d nights = $%.2f/night",
-				finalPrice, nights, perNightPrice)
-			return perNightPrice
-		}
-	}
-
-	c.logger.Debug("[cleaner] Single night price: $%.2f", finalPrice)
-	return finalPrice
+	return normaliseText(loc)
 }
 
 func (c *Cleaner) parseRating(raw string) float64 {
@@ -128,6 +172,17 @@ func (c *Cleaner) parseRating(raw string) float64 {
 		return 0
 	}
 	if val < 0 || val > 5 {
+		return 0
+	}
+	return val
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+func parseDollarAmount(s string) float64 {
+	s = strings.ReplaceAll(s, ",", "")
+	val, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
 		return 0
 	}
 	return val

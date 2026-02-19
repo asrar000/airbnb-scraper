@@ -33,7 +33,6 @@ func NewCSVWriter(path string) (*CSVWriter, error) {
 
 	w := csv.NewWriter(f)
 
-	// Write header
 	if err := w.Write([]string{
 		"platform", "title", "raw_price", "location", "rating", "url", "description", "scraped_at",
 	}); err != nil {
@@ -45,15 +44,10 @@ func NewCSVWriter(path string) (*CSVWriter, error) {
 	return &CSVWriter{file: f, writer: w}, nil
 }
 
-// WriteRaw writes the first 10 raw listings to the CSV file (truncating any previous data).
+// WriteRaw writes ALL raw listings to the CSV file — no cap.
 func (c *CSVWriter) WriteRaw(listings []*models.RawListing) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	// Limit to first 10 listings
-	if len(listings) > 10 {
-		listings = listings[:10]
-	}
 
 	for _, l := range listings {
 		row := []string{

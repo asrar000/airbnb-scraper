@@ -12,7 +12,6 @@ import (
 )
 
 // PostgresWriter persists cleaned listings to PostgreSQL.
-// It creates the table on first use and uses batch inserts for efficiency.
 type PostgresWriter struct {
 	db *sql.DB
 }
@@ -25,7 +24,6 @@ func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
 		return nil, fmt.Errorf("postgres: open: %w", err)
 	}
 
-	// Verify connection
 	for i := 0; i < 10; i++ {
 		if err = db.Ping(); err == nil {
 			break
@@ -44,7 +42,6 @@ func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
 	return pw, nil
 }
 
-// migrate creates the listings table and indexes if they do not exist.
 func (pw *PostgresWriter) migrate() error {
 	_, err := pw.db.Exec(`
 		CREATE TABLE IF NOT EXISTS listings (
@@ -76,32 +73,23 @@ func (pw *PostgresWriter) Clear() error {
 	return nil
 }
 
-// Write batch-inserts cleaned listings, clearing old data first and limiting to 10 listings.
+// Write batch-inserts ALL cleaned listings, clearing old data first.
 func (pw *PostgresWriter) Write(listings []*models.Listing) error {
 	if len(listings) == 0 {
 		return nil
 	}
 
-	// Clear all old data first
 	if err := pw.Clear(); err != nil {
 		return err
 	}
 
-	// Limit to first 10 listings
-	if len(listings) > 10 {
-		listings = listings[:10]
-	}
-
-	// Build a single multi-row INSERT
 	const batchSize = 50
 	for i := 0; i < len(listings); i += batchSize {
 		end := i + batchSize
 		if end > len(listings) {
 			end = len(listings)
 		}
-		batch := listings[i:end]
-
-		if err := pw.insertBatch(batch); err != nil {
+		if err := pw.insertBatch(listings[i:end]); err != nil {
 			return err
 		}
 	}
@@ -131,7 +119,6 @@ func (pw *PostgresWriter) insertBatch(batch []*models.Listing) error {
 	return err
 }
 
-// Close closes the database connection.
 func (pw *PostgresWriter) Close() error {
 	return pw.db.Close()
 }
