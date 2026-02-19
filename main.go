@@ -79,6 +79,6 @@ func main() {
 	report := insightSvc.Generate(dbListings)
 	insightSvc.Print(report)
 
-	fmt.Printf("✅  Done. Raw CSV → %s | Clean data → PostgreSQL (listings table)\n\n",
+	fmt.Printf("  Done. Raw CSV → %s | Clean data → PostgreSQL (listings table)\n\n",
 		cfg.CSVOutputPath)
 }
