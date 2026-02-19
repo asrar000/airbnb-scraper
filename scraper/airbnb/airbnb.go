@@ -19,7 +19,7 @@ import (
 const (
 	startURL           = "https://www.airbnb.com/"
 	platform           = "airbnb"
-	listingsPerSection = 4
+	listingsPerSection = 10
 )
 
 // cardInfo holds data scraped directly from a homepage listing card.
@@ -454,7 +454,11 @@ func (s *Scraper) enrichListings(allocCtx context.Context, listings []*models.Ra
 			if isGoodLocation(enriched.Location) && !isGoodLocation(l.Location) {
 				l.Location = enriched.Location
 			}
-			// Price and Rating — NEVER overwrite, already set from card
+			// Rating — if card didn't capture it, use detail page fallback
+			if l.Rating == "" && enriched.Rating != "" {
+				l.Rating = enriched.Rating
+			}
+			// Price — NEVER overwrite, already set from card
 			l.Description = enriched.Description
 		})
 	}
@@ -473,6 +477,7 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 		type pageData struct {
 			Title    string `json:"title"`
 			Location string `json:"location"`
+			Rating   string `json:"rating"`
 			Desc     string `json:"desc"`
 		}
 		var data pageData
@@ -483,29 +488,63 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 			chromedp.Evaluate(`window.scrollTo(0, 0)`, nil),
 			chromedp.Sleep(500*time.Millisecond),
 
-			// Expand description if collapsed
 			chromedp.Evaluate(`
 				(function() {
-					var btns = document.querySelectorAll('button');
-					for (var i = 0; i < btns.length; i++) {
-						var t = btns[i].innerText.toLowerCase();
-						if (t.includes('show more') || t.includes('read more')) {
-							btns[i].click(); return;
-						}
-					}
-				})()
-			`, nil),
-			chromedp.Sleep(1*time.Second),
+					var result = { title: '', location: '', rating: '', desc: '' };
 
-			chromedp.Evaluate(`
-				(function() {
-					var result = { title: '', location: '', desc: '' };
-
-					// Title
-					var h1 = document.querySelector('h1');
+					// ── Title ──────────────────────────────────────────────────────
+					// Real title is in h1[elementtiming="LCP-target"] above the photo grid.
+					// It may differ from the card title (e.g. long descriptive names).
+					var h1 = document.querySelector('h1[elementtiming="LCP-target"]') ||
+					          document.querySelector('h1');
 					if (h1) result.title = h1.innerText.trim();
 
-					// Location from subtitle: "Entire rental unit in Khet Suan Luang, Thailand"
+					// ── Rating ─────────────────────────────────────────────────────
+					// Strategy 1: the reviews anchor banner below the photo grid has
+					// data-testid="pdp-reviews-highlight-banner-host-rating" and inside it
+					// a span with aria-label="Rated X.X out of 5 stars."
+					var reviewBanner = document.querySelector('[data-testid="pdp-reviews-highlight-banner-host-rating"]');
+					if (reviewBanner) {
+						var ratedSpan = reviewBanner.querySelector('[aria-label*="out of 5"]') ||
+						                reviewBanner.querySelector('[aria-label*="Rated"]');
+						if (ratedSpan) {
+							var rl = ratedSpan.getAttribute('aria-label') || '';
+							var rm0 = rl.match(/([1-5]\.[0-9]{1,2})/);
+							if (rm0) result.rating = rm0[1];
+						}
+						// Also try the plain text number sibling div (aria-hidden="true">5.0</div>)
+						if (!result.rating) {
+							var numDiv = reviewBanner.querySelector('div[aria-hidden="true"]');
+							if (numDiv) {
+								var nd = numDiv.innerText.trim();
+								if (/^[1-5]\.[0-9]/.test(nd)) result.rating = nd;
+							}
+						}
+					}
+
+					// Strategy 2: any [aria-label*="Rated X out of 5"] anywhere on page
+					if (!result.rating) {
+						var rEl = document.querySelector('[aria-label*="out of 5"]') ||
+						          document.querySelector('[aria-label*="Rated"]');
+						if (rEl) {
+							var rt = rEl.getAttribute('aria-label') || rEl.innerText || '';
+							var rm2 = rt.match(/([1-5]\.[0-9]{1,2})/);
+							if (rm2) result.rating = rm2[1];
+						}
+					}
+
+					// Strategy 3: scan body lines for "★ 4.8" or "4.8 · N reviews"
+					if (!result.rating) {
+						var bodyLines = document.body.innerText.split('\n');
+						for (var li = 0; li < bodyLines.length; li++) {
+							var line = bodyLines[li].trim();
+							var rm3 = line.match(/★\s*([1-5]\.[0-9]{1,2})/);
+							if (!rm3) rm3 = line.match(/^([1-5]\.[0-9]{1,2})\s*·/);
+							if (rm3) { result.rating = rm3[1]; break; }
+						}
+					}
+
+					// ── Location ───────────────────────────────────────────────────
 					var h2s = document.querySelectorAll('h2');
 					for (var i = 0; i < h2s.length; i++) {
 						var txt = h2s[i].innerText.trim();
@@ -515,16 +554,24 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 							break;
 						}
 					}
-					// Fallback: "N nights in Location"
 					if (!result.location) {
 						var bt = document.body.innerText;
 						var nm = bt.match(/\d+\s*nights?\s+in\s+([^\n$\d]{3,60})/i);
 						if (nm) result.location = nm[1].trim();
 					}
 
-					// Description
+					// ── Description ────────────────────────────────────────────────
+					// Primary: [data-section-id="DESCRIPTION_DEFAULT"] — works for most listings.
 					var descEl = document.querySelector('[data-section-id="DESCRIPTION_DEFAULT"]');
-					if (descEl) result.desc = descEl.innerText.trim().substring(0, 1000);
+					if (descEl) {
+						var dt = descEl.innerText
+							.replace(/Some info has been automatically translated\.?\s*(Show original)?/gi, '')
+							.replace(/Show more/gi, '')
+							.trim();
+						if (dt.length > 30) result.desc = dt.substring(0, 1000);
+					}
+
+					// Fallback 1: <main> paragraphs
 					if (!result.desc || result.desc.length < 30) {
 						var paras = document.querySelectorAll('main p');
 						var parts = [];
@@ -534,6 +581,48 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 						}
 						if (parts.length) result.desc = parts.join(' ').substring(0, 1000);
 					}
+
+					// Fallback 2: only when still empty — find "Show more" button via
+					// data-button-content="true" span, grab text BEFORE it in its container.
+					// This catches listings where description is not in the standard section.
+					if (!result.desc || result.desc.length < 30) {
+						var showMoreBtn = null;
+						var btns = document.querySelectorAll('button');
+						for (var bi = 0; bi < btns.length; bi++) {
+							var span = btns[bi].querySelector('[data-button-content="true"]');
+							if (span && span.innerText.trim().toLowerCase() === 'show more') {
+								showMoreBtn = btns[bi]; break;
+							}
+							if (!showMoreBtn && btns[bi].innerText.trim().toLowerCase() === 'show more') {
+								showMoreBtn = btns[bi];
+							}
+						}
+						if (showMoreBtn) {
+							var container = showMoreBtn.parentElement;
+							for (var up = 0; up < 6; up++) {
+								if (!container) break;
+								var cText = (container.innerText || '').trim();
+								if (cText.length > 80 && cText.replace(/show more/gi, '').trim().length > 40) break;
+								container = container.parentElement;
+							}
+							if (container) {
+								var descParts = [];
+								var walker = document.createTreeWalker(
+									container, NodeFilter.SHOW_TEXT, null, false
+								);
+								var node;
+								while ((node = walker.nextNode())) {
+									if (showMoreBtn.contains(node)) break;
+									var t = node.nodeValue.trim();
+									if (t.length > 0) descParts.push(t);
+								}
+								var raw = descParts.join(' ').trim();
+								raw = raw.replace(/Some info has been automatically translated\.?\s*(Show original)?/gi, '').trim();
+								if (raw.length > 30) result.desc = raw.substring(0, 1000);
+							}
+						}
+					}
+
 					if (!result.desc) result.desc = 'Description not available';
 
 					return result;
@@ -546,6 +635,7 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 
 		listing.Title = data.Title
 		listing.Location = data.Location
+		listing.Rating = data.Rating
 		listing.Description = data.Desc
 		return nil
 	})
