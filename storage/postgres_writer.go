@@ -42,24 +42,28 @@ func NewPostgresWriter(dsn string) (*PostgresWriter, error) {
 	return pw, nil
 }
 
+// migrate drops and recreates the listings table fresh on every run.
+// This ensures serial IDs always start from 1.
 func (pw *PostgresWriter) migrate() error {
 	_, err := pw.db.Exec(`
-		CREATE TABLE IF NOT EXISTS listings (
+		DROP TABLE IF EXISTS listings;
+
+		CREATE TABLE listings (
 			id          SERIAL PRIMARY KEY,
-			platform    VARCHAR(50)  NOT NULL,
-			title       TEXT         NOT NULL,
+			platform    VARCHAR(50)   NOT NULL,
+			title       TEXT          NOT NULL,
 			price       NUMERIC(10,2) NOT NULL DEFAULT 0,
-			location    TEXT         NOT NULL DEFAULT '',
-			rating      NUMERIC(4,2) NOT NULL DEFAULT 0,
-			url         TEXT         UNIQUE NOT NULL,
-			description TEXT         NOT NULL DEFAULT '',
-			created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+			location    TEXT          NOT NULL DEFAULT '',
+			rating      NUMERIC(4,2)  NOT NULL DEFAULT 0,
+			url         TEXT          UNIQUE NOT NULL,
+			description TEXT          NOT NULL DEFAULT '',
+			created_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
 		);
 
-		CREATE INDEX IF NOT EXISTS idx_listings_price    ON listings(price);
-		CREATE INDEX IF NOT EXISTS idx_listings_location ON listings(location);
-		CREATE INDEX IF NOT EXISTS idx_listings_platform ON listings(platform);
-		CREATE INDEX IF NOT EXISTS idx_listings_rating   ON listings(rating);
+		CREATE INDEX idx_listings_price    ON listings(price);
+		CREATE INDEX idx_listings_location ON listings(location);
+		CREATE INDEX idx_listings_platform ON listings(platform);
+		CREATE INDEX idx_listings_rating   ON listings(rating);
 	`)
 	return err
 }
@@ -73,14 +77,10 @@ func (pw *PostgresWriter) Clear() error {
 	return nil
 }
 
-// Write batch-inserts ALL cleaned listings, clearing old data first.
+// Write batch-inserts ALL cleaned listings. Table is already fresh from migrate().
 func (pw *PostgresWriter) Write(listings []*models.Listing) error {
 	if len(listings) == 0 {
 		return nil
-	}
-
-	if err := pw.Clear(); err != nil {
-		return err
 	}
 
 	const batchSize = 50
