@@ -126,9 +126,20 @@ func (c *Cleaner) parsePrice(raw string) float64 {
 // parseLocation uses the pre-set section location if it's meaningful,
 // otherwise tries to extract it from the raw page text.
 func (c *Cleaner) parseLocation(location, rawPageText string) string {
+	// Strip known bad prefixes from section names that slipped through
+	badPrefixes := []string{
+		"Check out homes in ",
+		"Available next month in ",
+		"Things to do in ",
+		"Explore homes in ",
+		"Stay near ",
+		"Stay in ",
+		"Popular homes in ",
+		"Homes in ",
+		"Guests also checked out ",
+	}
 	junkPhrases := []string{
-		"where you'll be", "available next month", "add dates",
-		"check out homes", "things to do", "inspiration",
+		"where you'll be", "add dates", "inspiration",
 	}
 	isJunk := func(s string) bool {
 		lower := strings.ToLower(s)
@@ -139,16 +150,26 @@ func (c *Cleaner) parseLocation(location, rawPageText string) string {
 		}
 		return false
 	}
+	stripPrefix := func(s string) string {
+		lower := strings.ToLower(s)
+		for _, p := range badPrefixes {
+			if strings.HasPrefix(lower, strings.ToLower(p)) {
+				return strings.TrimSpace(s[len(p):])
+			}
+		}
+		return s
+	}
 
 	loc := strings.TrimSpace(location)
+	loc = stripPrefix(loc)
 
-	// Keep it if it's a clean section-derived value
+	// Keep it if clean
 	if loc != "" && loc != "N/A" && loc != "Unknown" &&
 		!strings.Contains(loc, "\n") && len(loc) < 80 && !isJunk(loc) {
 		return normaliseText(loc)
 	}
 
-	// Try extracting from page body as fallback
+	// Fallback: extract from page body
 	if rawPageText != "" {
 		re := regexp.MustCompile(`\d+\s*nights?\s+in\s+([^\n$\d]{3,60})`)
 		if m := re.FindStringSubmatch(rawPageText); len(m) > 1 {

@@ -634,11 +634,27 @@ func (s *Scraper) scrapeDetailPage(allocCtx context.Context, url string) (*model
 				(function() {
 					var result = { title: '', price: '', needsDates: false, location: '', rating: '', description: '' };
 
-					// Location: "X nights in [Location]" is most reliable
-					var allText = document.body.innerText;
-					var nightsMatch = allText.match(/\d+\s*nights?\s+in\s+([^\n$]{3,60})/i);
-					if (nightsMatch) result.location = nightsMatch[1].trim();
+					// Location strategy 1: subtitle below images
+					// e.g. "Entire rental unit in Khet Suan Luang, Thailand"
+					// e.g. "Private room in Bang Rak, Thailand"
+					var subtitleEls = document.querySelectorAll('h2, [data-section-id="OVERVIEW_DEFAULT"] h2, div[class*="t1veemd9"], div[data-testid*="subtitle"]');
+					for (var si = 0; si < subtitleEls.length; si++) {
+						var st = (subtitleEls[si].innerText || '').trim();
+						var inMatch = st.match(/\bin\s+([^,\n]+(?:,\s*[^\n]+)?)/i);
+						if (inMatch && inMatch[1] && inMatch[1].length < 80) {
+							result.location = inMatch[1].trim();
+							break;
+						}
+					}
 
+					// Location strategy 2: "X nights in [Location]" pattern
+					if (!result.location) {
+						var allText = document.body.innerText;
+						var nightsMatch = allText.match(/\d+\s*nights?\s+in\s+([^\n$]{3,60})/i);
+						if (nightsMatch) result.location = nightsMatch[1].trim();
+					}
+
+					// Location strategy 3: LOCATION_DEFAULT section
 					if (!result.location) {
 						var locSelectors = [
 							'[data-section-id="LOCATION_DEFAULT"] h2',
@@ -725,7 +741,15 @@ func (s *Scraper) printSectionDone(name string) {
 //   "Popular homes in Amphoe Bang Phli"       → "Amphoe Bang Phli"
 //   "Guests also checked out Bang Kapi"       → "Bang Kapi"
 //   "Homes in Amphoe Pak Kret"                → "Amphoe Pak Kret"
+//   "Check out homes in Johor Bahru District" → "Johor Bahru District"
+//   "Available next month in Sydney"          → "Sydney"
+//   "Things to do in Tokyo"                   → "Tokyo"
 func extractLocationFromSection(name string) string {
+	// Strip trailing arrow if present
+	name = strings.TrimSuffix(strings.TrimSpace(name), " ›")
+	name = strings.TrimSuffix(name, "›")
+	name = strings.TrimSpace(name)
+
 	prefixes := []string{
 		"Stay near ",
 		"Stay in ",
@@ -733,18 +757,21 @@ func extractLocationFromSection(name string) string {
 		"Homes in ",
 		"Places to stay in ",
 		"Guests also checked out ",
+		"Check out homes in ",
+		"Available next month in ",
 		"Unique stays in ",
 		"Things to do in ",
 		"Explore homes in ",
+		"Top-rated homes in ",
+		"Vacation rentals in ",
 	}
+
 	lower := strings.ToLower(name)
 	for _, p := range prefixes {
 		if strings.HasPrefix(lower, strings.ToLower(p)) {
 			return strings.TrimSpace(name[len(p):])
 		}
 	}
-	// Strip trailing " ›" arrow if present
-	name = strings.TrimSuffix(strings.TrimSpace(name), " ›")
 	return name
 }
 
