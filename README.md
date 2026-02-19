@@ -178,7 +178,7 @@ Perfect for:
 
 ---
 
-## 👨‍💻 Author
+##  Author
 
 **Asrar Ahmed**
 
